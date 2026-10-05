@@ -1,0 +1,23 @@
+# Secrets — never commit API keys / DB passwords
+.env
+Credentials.env
+
+# Raw data (too large for git)
+data/
+Data/
+
+# Virtual environment
+venv/
+.venv/
+
+# Local run logs
+*.log
+
+# App metadata
+.freebuff/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
