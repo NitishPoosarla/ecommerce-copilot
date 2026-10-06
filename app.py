@@ -11,7 +11,8 @@ HOW IT WORKS (beginner map):
   2. Sidebar filters  — date range / state / category, applied IN PANDAS
                         (fast, in-memory) instead of new SQL per click.
   3. KPI cards        — 4 headline numbers recomputed from the filtered data.
-  4. Tabs             — 4 pages of Plotly charts, one per brief question set.
+  4. Tabs             — 4 pages of Plotly charts + an "Ask the Copilot"
+                        tab (Phase 5 RAG chat: SQL + pgvector + Groq).
 
 GRAIN RULE (from Phase 2): fact is 1 row per ORDER ITEM.
   - Money: sum directly at item grain.
@@ -160,8 +161,8 @@ c4.metric("Repeat Purchase Rate", f"{repeat_rate:.1f}%",
 st.divider()
 
 # ------------------------------------------------------------------- tabs
-tab_rev, tab_del, tab_revu, tab_cust = st.tabs(
-    ["Revenue", "Delivery", "Reviews", "Customers"]
+tab_rev, tab_del, tab_revu, tab_cust, tab_bot = st.tabs(
+    ["Revenue", "Delivery", "Reviews", "Customers", "Ask the Copilot"]
 )
 
 # ============================================================ TAB 1: REVENUE
@@ -349,3 +350,64 @@ with tab_cust:
         f"**{rp:.1f}% of customers** in this selection bought 2+ times. "
         f"The brief expects this to be low — the marketplace is ~97% one-time buyers."
     )
+
+# =========================================================== TAB 5: COPILOT
+with tab_bot:
+    # Lazy import: pulls in the RAG engine only when this tab's code runs.
+    from copilot.copilot import ask as copilot_ask
+
+    st.caption(
+        "RAG copilot — numeric questions run SQL against the warehouse, "
+        "document questions hit pgvector top-4 search over docs/, mixed "
+        "questions do both. Every answer is written by Groq "
+        "(openai/gpt-oss-120b) using ONLY the retrieved evidence, with "
+        "citations below."
+    )
+
+    def _render_citations(citations: list, unsupported: list) -> None:
+        """Sources in small text under the answer."""
+        for c in citations:
+            preview = " ".join(c["content"].split())[:140]
+            st.caption(f"{c['eid']} · {c['label']} — {preview}…")
+        if unsupported:
+            st.warning(
+                "Numbers not found in retrieved evidence (verify before "
+                f"trusting): {', '.join(unsupported)}"
+            )
+
+    if "copilot_msgs" not in st.session_state:
+        st.session_state.copilot_msgs = []
+
+    for m in st.session_state.copilot_msgs:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+            _render_citations(m.get("citations", []), m.get("unsupported", []))
+
+    if prompt := st.chat_input("Ask the copilot — e.g. What was total revenue?"):
+        st.session_state.copilot_msgs.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("Routing → SQL / pgvector → Groq…"):
+                try:
+                    res = copilot_ask(prompt, verbose=False)
+                except Exception as exc:      # show, don't crash the dashboard
+                    st.error(f"Copilot error: {exc}")
+                    res = None
+            if res:
+                st.markdown(res["answer"])
+                st.caption(
+                    f"route: {res['route']} · {len(res['evidence'])} evidence "
+                    f"blocks · model: openai/gpt-oss-120b"
+                )
+                _render_citations(res["citations"], res["unsupported_numbers"])
+                st.session_state.copilot_msgs.append({
+                    "role": "assistant",
+                    "content": res["answer"],
+                    "citations": [
+                        {"eid": c["eid"], "label": c["label"],
+                         "content": c["content"]}
+                        for c in res["citations"]
+                    ],
+                    "unsupported": res["unsupported_numbers"],
+                })
