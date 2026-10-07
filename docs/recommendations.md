@@ -52,9 +52,9 @@ reviews.
 | On-time orders | **4.30** | 6.6% |
 | Late orders | **2.57** | **46.1%** |
 
-- 7,620 late orders were reviewed; 46.1% of them ≈ **3,513 one-star reviews**.
+- 7,620 late orders were reviewed; 46.1% of them ≈ **3,512 one-star reviews**.
 - Total 1-star reviews in the dataset: **10,715** → **32.8% of ALL 1-star
-  reviews come from late deliveries alone** (3,513 / 10,715).
+  reviews come from late deliveries alone** (3,512 / 10,715).
 
 **Suggested action.** Trigger a proactive message (email/SMS) the moment an
 order's predicted delivery slips past its estimate — status explanation plus a
