@@ -10,6 +10,11 @@ A normal chatbot guesses. This copilot is not allowed to guess:
 
 1. **Route** — a tiny keyword router reads your question and decides where the
    answer can possibly live:
+   - **refuse** — the question is structurally unanswerable: a year outside
+     the 2016–2018 warehouse, or a domain with no table at all (marketing
+     spend, budget, salary…). No SQL runs; the copilot gets an explicit
+     scope note and must say the information does not exist instead of
+     guessing a figure.
    - **numeric** questions (revenue, delivery %, scores, states, categories)
      → run a *pre-tested SQL query* against the warehouse. The LLM never
      writes SQL and never does math — it only explains the rows we fetched.
@@ -40,36 +45,40 @@ A normal chatbot guesses. This copilot is not allowed to guess:
                   user question (Streamlit "Ask the Copilot" tab)
                                    │
                           ┌────────▼────────┐
-                          │  ROUTER (regex) │  numeric / document / mixed
+                          │  ROUTER (regex) │  refuse / numeric / document / mixed
                           └────────┬────────┘
-              ┌────────────────────┼────────────────────┐
-              ▼ numeric            ▼ document           ▼ mixed = both
-     ┌────────────────┐   ┌───────────────────┐
-     │ canned SQL     │   │ embed question    │   (all-MiniLM-L6-v2,
-     │ (5 tested      │   │ all-MiniLM-L6-v2 │    local, 384 dims)
-     │  queries)      │   │ pgvector top-4   │
-     └───────┬────────┘   │ <=> rag_documents│
-             │            └────────┬──────────┘
-             └──────────┬──────────┘
-                        ▼
-             evidence pack [E1][E2]…
-        (SQL rows +/or doc chunk titles+text)
-                        │
-                        ▼
-        ┌───────────────────────────────────┐
-        │ Groq  openai/gpt-oss-120b         │
-        │ rules: only evidence numbers,     │
-        │ cite [E#], say "fictional" when    │
-        │ the handbook is cited             │
-        └───────────────┬───────────────────┘
-                        ▼
-             parser + number audit
-        (drop bogus [E#], flag any number
-         not present in the evidence)
-                        │
-                        ▼
-        answer + citations in small text
-             under it (st.caption)
+           ┌───────────────────────┼───────────────────┬──────────────┐
+           ▼ refuse                ▼ numeric           ▼ document     ▼ mixed = both
+   scope note, no SQL;      ┌──────────────┐   ┌───────────────────┐
+   docs still searched      │ canned SQL   │   │ embed question    │  (all-MiniLM-L6-v2,
+   (corpus may state        │ (5 tested    │   │ all-MiniLM-L6-v2 │   local, 384 dims)
+   "no such data")          │  queries)    │   │ pgvector top-4   │
+           │                └──────┬───────┘   │ <=> rag_documents│
+           │                       │           └────────┬──────────┘
+           └───────────┬───────────┴────────────────────┘
+                       ▼
+            evidence pack [E1][E2]…
+       (SQL rows +/or doc chunk titles+text)
+                       │
+                       ▼
+       ┌───────────────────────────────────┐
+       │ Groq  openai/gpt-oss-120b         │
+       │ rules: only evidence numbers,     │
+       │ cite [E#], say "fictional" when    │
+       │ the handbook is cited; on a       │
+       │ refuse route: say the data does   │
+       │ NOT exist, invent nothing         │
+       └───────────────┬───────────────────┘
+                       ▼
+            parser + number audit
+       (drop bogus [E#], flag any number
+        not in evidence AND not in your
+        question — quoting "Q3 2019" back
+        is not an invention)
+                       │
+                       ▼
+       answer + citations in small text
+            under it (st.caption)
 ```
 
 ## Files
@@ -84,7 +93,7 @@ A normal chatbot guesses. This copilot is not allowed to guess:
 | `copilot/ingest.py` | Embeds chunks → table `rag_documents` (vector(384)) |
 | `copilot/db.py` | Shared Postgres connection (psycopg2 + SSL) |
 | `copilot/copilot.py` | The engine: router → SQL/pgvector → Groq → audit |
-| `copilot/test_questions.py` | The 8 acceptance questions + flag checks |
+| `copilot/test_questions.py` | The 9 acceptance questions + flag checks |
 | `app.py` (tab 5) | Streamlit chat UI with citations under each answer |
 
 ## Run it
@@ -96,7 +105,7 @@ A normal chatbot guesses. This copilot is not allowed to guess:
 # one question from the terminal
 ./venv/Scripts/python.exe -m copilot.copilot "What was total revenue?"
 
-# all 8 acceptance questions (exit 0 = no flags)
+# all 9 acceptance questions (exit 0 = no flags)
 ./venv/Scripts/python.exe -m copilot.test_questions
 
 # the dashboard + chat tab

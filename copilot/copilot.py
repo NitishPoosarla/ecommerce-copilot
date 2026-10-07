@@ -1,7 +1,10 @@
 """STEP 5 — The RAG Business Copilot engine.
 
 Flow for one question:
-  question ──► ROUTER (keywords decide numeric / document / mixed)
+  question ──► ROUTER (keywords decide refuse / numeric / document / mixed)
+               ├─ refuse   ──► out of scope for this warehouse: no SQL,
+               │              pgvector + a scope note, and the copilot must
+               │              say the information does not exist
                ├─ numeric  ──► canned SQL against the warehouse
                ├─ document ──► pgvector top-4 similarity search
                └─ mixed    ──► both
@@ -205,9 +208,39 @@ DOC_WORDS = re.compile(
 )
 
 
-def route(question: str) -> str:
-    """Return 'numeric' | 'document' | 'mixed'."""
+# Questions this warehouse structurally cannot answer: a year outside the
+# ETL range (fact_orders holds 2016-2018 only), or a domain with no table
+# at all. Routing them to "refuse" skips SQL and adds a scope note so the
+# copilot states the absence instead of guessing a figure.
+DATA_YEARS = {"2016", "2017", "2018"}
+OUT_OF_SCOPE = re.compile(
+    r"\bmarketing\b|\bbudget\b|\bsalar(?:y|ies)\b|\bpayroll\b|"
+    r"\bheadcount\b|\badvertis|\bemployee|\broi\b",
+    re.I,
+)
+
+
+def scope_reason(question: str) -> str | None:
+    """Why the warehouse cannot answer, or None when the question is in scope."""
     q = question.lower()
+    years = [y for y in re.findall(r"\b(?:19|20)\d{2}\b", q)
+             if y not in DATA_YEARS]
+    if years:
+        return (f"it asks about {years[0]}, but the warehouse covers "
+                "2016-2018 only")
+    m = OUT_OF_SCOPE.search(q)
+    if m:
+        return f"'{m.group(0)}' is not tracked in any table of this warehouse"
+    return None
+
+
+def route(question: str) -> str:
+    """Return 'refuse' | 'numeric' | 'document' | 'mixed'."""
+    q = question.lower()
+    if scope_reason(q):
+        # Out of scope: SQL cannot help. Doc retrieval still runs in ask()
+        # because the corpus may document the ABSENCE of the data.
+        return "refuse"
     doc_absolute = any(re.search(p, q) for p, _ in DOC_ABSOLUTE)
     if doc_absolute:
         return "document"
@@ -349,7 +382,8 @@ def _evidence_pack(evidence: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def call_groq(question: str, evidence: list[dict]) -> str:
+def call_groq(question: str, evidence: list[dict],
+              scope_note: str | None = None) -> str:
     from groq import Groq
 
     client = Groq(api_key=load_groq_key())
@@ -357,6 +391,12 @@ def call_groq(question: str, evidence: list[dict]) -> str:
         f"QUESTION: {question}\n\nEVIDENCE PACK:\n{_evidence_pack(evidence)}\n\n"
         + GROQ_INSTRUCTIONS
     )
+    if scope_note:
+        user_msg += (
+            f"\n\nSCOPE NOTE: {scope_note}. The evidence pack therefore "
+            "cannot answer the question. Say plainly that you do not have "
+            "this information - do NOT guess or produce any number for it."
+        )
     resp = client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[
@@ -383,13 +423,19 @@ _BRACKETS = str.maketrans({
 
 
 def _norm_num(s: str) -> str:
-    return s.replace(",", "").rstrip("%").lstrip("0") or "0"
+    # strip grouping commas, trailing "%" and a sentence-final "." so
+    # "2019." in an answer compares equal to "2019" in the question
+    return s.replace(",", "").rstrip("%").rstrip(".").lstrip("0") or "0"
 
 
-def parse_answer(raw: str, evidence: list[dict]) -> dict:
+def parse_answer(raw: str, evidence: list[dict],
+                 question: str = "") -> dict:
     """Split the LLM reply, validate citations, audit numbers.
 
     Returns {answer, citations, unsupported_numbers, uncited, parse_ok}.
+    Numbers the user typed in the question are exempt from the audit:
+    quoting the question back (e.g. refusing a request about "Q3 2019")
+    is not an invented number.
     """
     m = re.search(r"ANSWER:\s*(.*?)\s*CITATIONS:\s*(.*)$", raw, re.S | re.I)
     if m:
@@ -433,9 +479,11 @@ def parse_answer(raw: str, evidence: list[dict]) -> dict:
     answer_no_cit = re.sub(r"(?<=\s)\d+\.(?=\s)", "", answer_no_cit)
     evidence_text = " ".join(e["content"] for e in evidence)
     evidence_nums = {_norm_num(n) for n in _NUM_RE.findall(evidence_text)}
+    question_nums = {_norm_num(n) for n in _NUM_RE.findall(question)}
     unsupported = sorted({
         n for n in _NUM_RE.findall(answer_no_cit)
         if _norm_num(n) not in evidence_nums
+        and _norm_num(n) not in question_nums
     })
 
     # Denominator audit: every "X% of ..." claim must name a concrete,
@@ -472,11 +520,15 @@ def ask(question: str, verbose: bool = True) -> dict:
     evidence: list[dict] = []
     if r in ("numeric", "mixed"):
         evidence += run_sql(question)
-    if r in ("document", "mixed"):
+    if r in ("document", "mixed", "refuse"):
+        # Even a refusal searches the corpus: the docs may document the
+        # ABSENCE of the data ("no marketing-spend data"), which is itself
+        # citable evidence.
         evidence += search_docs(question)
 
-    raw = call_groq(question, evidence)
-    parsed = parse_answer(raw, evidence)
+    raw = call_groq(question, evidence,
+                    scope_note=scope_reason(question) if r == "refuse" else None)
+    parsed = parse_answer(raw, evidence, question)
     result = {
         "question": question,
         "route": r,

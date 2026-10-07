@@ -1,12 +1,23 @@
-"""STEP 7 — Run the 8 acceptance questions through the copilot and print
+"""STEP 7 — Run the 9 acceptance questions through the copilot and print
 question -> route -> answer -> citations -> audit flags.
 
 Run: ./venv/Scripts/python.exe -m copilot.test_questions
 """
 
+import re
 import sys
 
 from copilot.copilot import ask
+
+# A "refuse" question must actually say the information is missing.
+# Tolerate straight and unicode apostrophes (don't / don’t).
+REFUSAL_RE = re.compile(
+    r"do(es)?n['’]?t have|do not have|no evidence|cannot answer|"
+    r"can['’]?t answer|not available in|no such (data|information|table)|"
+    r"does not (exist|contain|include)|isn['’]?t (available|tracked)|"
+    r"not tracked|no marketing-spend",
+    re.I,
+)
 
 QUESTIONS = [
     ("numeric",  "What was total revenue?"),
@@ -17,6 +28,9 @@ QUESTIONS = [
     ("document", "How does the late-delivery model work and what are its limitations?"),
     ("mixed",    "Why are customers unhappy - summarize the main evidence?"),
     ("document", "What is our escalation policy for very late orders?"),
+    # Refusal: 2019 is outside the 2016-2018 warehouse, and no table
+    # tracks marketing spend. The copilot must NOT invent a budget.
+    ("refuse",   "What was our marketing budget for Q3 2019?"),
 ]
 
 
@@ -36,6 +50,8 @@ def main() -> int:
         flags = []
         if res["route"] != expected:
             flags.append(f"route-mismatch (expected {expected})")
+        if expected == "refuse" and not REFUSAL_RE.search(res["answer"]):
+            flags.append("NOT-A-REFUSAL (never says the info is missing)")
         if not res["citations"]:
             flags.append("NO-CITATIONS")
         if res["unsupported_numbers"]:

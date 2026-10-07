@@ -359,7 +359,9 @@ with tab_bot:
     st.caption(
         "RAG copilot — numeric questions run SQL against the warehouse, "
         "document questions hit pgvector top-4 search over docs/, mixed "
-        "questions do both. Every answer is written by Groq "
+        "questions do both, and out-of-scope questions (a year outside "
+        "2016–2018, or a domain with no table like marketing budget) are "
+        "refused instead of guessed. Every answer is written by Groq "
         "(openai/gpt-oss-120b) using ONLY the retrieved evidence, with "
         "citations below."
     )
