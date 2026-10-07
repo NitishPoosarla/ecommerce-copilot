@@ -87,7 +87,8 @@ SQL_INTENTS = [
     {
         "name": "review score of late vs on-time orders",
         "pattern": r"late.*review|review.*late|late vs|vs on-?time|on-?time vs|unhappy|dissatisf|complain|bad review|poor rating",
-        "sql": """
+        "sql": [
+            """
             SELECT CASE WHEN is_on_time THEN 'on-time' ELSE 'late' END AS delivery,
                    ROUND(AVG(review_score)::numeric, 2) AS avg_review_score,
                    COUNT(*) FILTER (WHERE review_score = 1) AS one_star_orders,
@@ -101,6 +102,34 @@ SQL_INTENTS = [
             GROUP BY 1
             ORDER BY 1
         """,
+            """
+            SELECT COUNT(*) FILTER (WHERE review_score = 1)
+                       AS one_star_ALL_reviewed_orders_incl_undelivered,
+                   COUNT(*) FILTER (WHERE is_delivered AND review_score = 1)
+                       AS one_star_DELIVERED_orders_only,
+                   COUNT(*) FILTER (WHERE NOT is_delivered AND review_score = 1)
+                       AS one_star_undelivered_orders,
+                   ROUND(100.0 * COUNT(*) FILTER (
+                             WHERE is_delivered AND is_on_time = false
+                                   AND review_score = 1)
+                         / NULLIF(COUNT(*) FILTER (WHERE review_score = 1), 0), 1)
+                       AS late_one_star_pct_of_ALL_one_star_incl_undelivered,
+                   ROUND(100.0 * COUNT(*) FILTER (
+                             WHERE is_delivered AND is_on_time = false
+                                   AND review_score = 1)
+                         / NULLIF(COUNT(*) FILTER (
+                             WHERE is_delivered AND review_score = 1), 0), 1)
+                       AS late_one_star_pct_of_DELIVERED_one_star_only
+            FROM (
+                SELECT DISTINCT ON (order_id)
+                       order_id, is_delivered, is_on_time, review_score
+                FROM fact_orders
+                WHERE review_score IS NOT NULL
+                ORDER BY order_id
+            ) t
+        """,
+        ],
+        "extra_name": "one-star shares with explicit denominators",
     },
     {
         "name": "repeat purchase rate and revenue split",
@@ -209,14 +238,18 @@ def run_sql(question: str) -> list[dict]:
     entries = []
     with get_engine().connect() as conn:
         for intent in pick_sql_intents(question):
-            rows = conn.execute(text(intent["sql"])).mappings().all()
-            preview_rows = [dict(r) for r in rows[:10]]
-            entries.append({
-                "kind": "sql",
-                "label": f"SQL: {intent['name']}",
-                "content": _format_sql(intent["name"], preview_rows),
-                "truncated": len(rows) > 10,
-            })
+            sqls = intent["sql"] if isinstance(intent["sql"], list) else [intent["sql"]]
+            for idx, sql in enumerate(sqls):
+                name = intent["name"] if idx == 0 else intent.get(
+                    "extra_name", intent["name"])
+                rows = conn.execute(text(sql)).mappings().all()
+                preview_rows = [dict(r) for r in rows[:10]]
+                entries.append({
+                    "kind": "sql",
+                    "label": f"SQL: {name}",
+                    "content": _format_sql(name, preview_rows),
+                    "truncated": len(rows) > 10,
+                })
     return entries
 
 
@@ -284,9 +317,15 @@ provided.
 3. If a block's title says FICTIONAL (the operations handbook), present it \
 as FICTIONAL company policy and say explicitly it is fictional - never as \
 a measured fact about the data.
-4. If the evidence cannot answer the question, say so plainly and suggest \
+4. PERCENTAGE DENOMINATORS: every "X% of ..." claim MUST name its \
+denominator explicitly - the population AND its scope, exactly as the \
+evidence names it. Example: "32.8% of ALL one-star reviews (across all \
+reviewed orders, including undelivered ones)" vs "37.9% of one-star \
+reviews on DELIVERED orders only". Never write a bare "% of them", \
+"% of reviews", or any denominator without its scope.
+5. If the evidence cannot answer the question, say so plainly and suggest \
 what kind of evidence would.
-5. Answer in 2-5 short sentences plus, when useful, a compact list. Plain \
+6. Answer in 2-5 short sentences plus, when useful, a compact list. Plain \
 text only - no markdown headers."""
 
 GROQ_INSTRUCTIONS = """Format your reply as:
@@ -399,10 +438,25 @@ def parse_answer(raw: str, evidence: list[dict]) -> dict:
         if _norm_num(n) not in evidence_nums
     })
 
+    # Denominator audit: every "X% of ..." claim must name a concrete,
+    # scoped population (>= 2 words, no bare pronoun like "them"/"those")
+    missing_denominator: list[str] = []
+    for m_pct in re.finditer(r"\d[\d,.]*\s*%\s*of\b", answer_no_cit):
+        tail = answer_no_cit[m_pct.end(): m_pct.end() + 80]
+        tail = re.split(r"[.;:!?\n]", tail, maxsplit=1)[0]
+        nouns = re.findall(r"[A-Za-z][A-Za-z'-]+", tail)
+        weak = re.match(r"\s*(them|their|it|those|these|the same|this)\b",
+                        tail, re.I)
+        if len(nouns) < 2 or weak:
+            snippet = (answer_no_cit[m_pct.start(): m_pct.end()]
+                       + " " + tail.strip())
+            missing_denominator.append(" ".join(snippet.split())[:100])
+
     return {
         "answer": answer,
         "citations": citations,
         "unsupported_numbers": unsupported,
+        "missing_denominator": missing_denominator,
         "uncited_blocks": uncited,
         "unknown_citations": bogus + bogus_listed,
         "parse_ok": bool(cited),
@@ -443,6 +497,9 @@ def ask(question: str, verbose: bool = True) -> dict:
         if result["unsupported_numbers"]:
             print(f"  !! numbers not found in evidence: "
                   f"{result['unsupported_numbers']}")
+        if result["missing_denominator"]:
+            print(f"  !! '%of' claims without explicit denominator: "
+                  f"{result['missing_denominator']}")
         if not result["citations"]:
             print("  !! no citations parsed")
     return result

@@ -42,6 +42,8 @@ def main() -> int:
             flags.append(f"INVENTED-NUMBERS {res['unsupported_numbers']}")
         if res.get("unknown_citations"):
             flags.append(f"BOGUS-CITATIONS {res['unknown_citations']}")
+        if res.get("missing_denominator"):
+            flags.append(f"MISSING-DENOMINATOR {res['missing_denominator']}")
         if flags:
             problems += 1
             print("   FLAGS:", "; ".join(flags))

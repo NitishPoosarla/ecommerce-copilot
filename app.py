@@ -364,7 +364,8 @@ with tab_bot:
         "citations below."
     )
 
-    def _render_citations(citations: list, unsupported: list) -> None:
+    def _render_citations(citations: list, unsupported: list,
+                          denominators: list | None = None) -> None:
         """Sources in small text under the answer."""
         for c in citations:
             preview = " ".join(c["content"].split())[:140]
@@ -374,6 +375,11 @@ with tab_bot:
                 "Numbers not found in retrieved evidence (verify before "
                 f"trusting): {', '.join(unsupported)}"
             )
+        if denominators:
+            st.warning(
+                "Percentage claims without an explicit denominator — scope "
+                "unclear: " + " | ".join(denominators)
+            )
 
     if "copilot_msgs" not in st.session_state:
         st.session_state.copilot_msgs = []
@@ -381,7 +387,8 @@ with tab_bot:
     for m in st.session_state.copilot_msgs:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
-            _render_citations(m.get("citations", []), m.get("unsupported", []))
+            _render_citations(m.get("citations", []), m.get("unsupported", []),
+                              m.get("denominators", []))
 
     if prompt := st.chat_input("Ask the copilot — e.g. What was total revenue?"):
         st.session_state.copilot_msgs.append({"role": "user", "content": prompt})
@@ -400,7 +407,8 @@ with tab_bot:
                     f"route: {res['route']} · {len(res['evidence'])} evidence "
                     f"blocks · model: openai/gpt-oss-120b"
                 )
-                _render_citations(res["citations"], res["unsupported_numbers"])
+                _render_citations(res["citations"], res["unsupported_numbers"],
+                                  res["missing_denominator"])
                 st.session_state.copilot_msgs.append({
                     "role": "assistant",
                     "content": res["answer"],
@@ -410,4 +418,5 @@ with tab_bot:
                         for c in res["citations"]
                     ],
                     "unsupported": res["unsupported_numbers"],
+                    "denominators": res["missing_denominator"],
                 })

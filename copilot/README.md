@@ -28,6 +28,11 @@ A normal chatbot guesses. This copilot is not allowed to guess:
    that we did not actually supply, and re-checks every number in the answer
    against the evidence. Anything suspicious is surfaced in the UI as a
    warning, not silently trusted.
+   Two extra guardrails: every `X% of …` claim must state its **denominator
+   with scope** (e.g. "32.8% of ALL one-star reviews, including undelivered
+   orders" = 3,512/10,715, vs "37.9% of one-star reviews on DELIVERED orders
+   only" = 3,512/9,258 — same numerator, different denominator), and any
+   `% of` claim without one is flagged in the UI.
 
 ## Architecture diagram
 
